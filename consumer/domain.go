@@ -17,11 +17,17 @@ type Column struct {
 }
 
 type Wal2JsonV2 struct {
-	Action string                 `json:"action"`
-	Schema string                 `json:"schema"`
-	Table  string                 `json:"table"`
-	Old    map[string]interface{} `json:"old"`
-	New    map[string]interface{} `json:"new"`
+	Action string                    `json:"action"`
+	Schema string                    `json:"schema"`
+	Table  string                    `json:"table"`
+	Old    map[string]interface{}    `json:"old"`
+	New    map[string]interface{}    `json:"new"`
+	Diff   map[string]Wal2JsonV2Diff `json:"diff"`
+}
+
+type Wal2JsonV2Diff struct {
+	Old interface{} `json:"old"`
+	New interface{} `json:"new"`
 }
 
 type Consumer interface {

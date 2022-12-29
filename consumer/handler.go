@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"reflect"
 
 	"github.com/streadway/amqp"
 )
@@ -73,14 +74,34 @@ func (rmqc *RabbitMQConsumer) ParseWALMessage(walMessage Wal2JsonChange) Wal2Jso
 	var wal2JsonV2 Wal2JsonV2
 	wal2JsonV2.Action, wal2JsonV2.Table, wal2JsonV2.Schema = walMessage.Action, walMessage.Table, walMessage.Schema
 
-	wal2JsonV2.New = make(map[string]interface{})
-	for _, col := range walMessage.Columns {
-		wal2JsonV2.New[col.Name] = col.Value
+	if walMessage.Columns != nil {
+		wal2JsonV2.New = make(map[string]interface{})
+		for _, col := range walMessage.Columns {
+			wal2JsonV2.New[col.Name] = col.Value
+		}
 	}
 	if walMessage.Identity != nil {
+		// Fill up old column map
 		wal2JsonV2.Old = make(map[string]interface{})
 		for _, col := range walMessage.Identity {
 			wal2JsonV2.Old[col.Name] = col.Value
+		}
+		if wal2JsonV2.Action == "U" {
+			eq := reflect.DeepEqual(wal2JsonV2.Old, wal2JsonV2.New)
+			if !eq {
+				// Creata diff value map of old and new data
+				wal2JsonV2.Diff = make(map[string]Wal2JsonV2Diff)
+				for key, val := range wal2JsonV2.Old {
+					oldValue := val
+					newValue := wal2JsonV2.New[key]
+					if oldValue != newValue {
+						wal2JsonV2.Diff[key] = Wal2JsonV2Diff{
+							Old: oldValue,
+							New: newValue,
+						}
+					}
+				}
+			}
 		}
 	}
 	return wal2JsonV2
