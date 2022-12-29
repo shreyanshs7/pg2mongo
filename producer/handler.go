@@ -99,48 +99,57 @@ func (walh *WalHandler) ConsumeWAL(conn *pgconn.PgConn, sysident pglogrepl.Ident
 			continue
 		}
 
-		clientXLogPos, nextStandbyMessageDeadline = walh.HandleWAL(msg, clientXLogPos, nextStandbyMessageDeadline)
+		clientXLogPos, nextStandbyMessageDeadline = walh.handleWAL(msg, clientXLogPos, nextStandbyMessageDeadline)
 	}
 }
 
-func (walh *WalHandler) HandleWAL(msg *pgproto3.CopyData, clientXLogPos pglogrepl.LSN, nextStandbyMessageDeadline time.Time) (pglogrepl.LSN, time.Time) {
+func (walh *WalHandler) handleWAL(msg *pgproto3.CopyData, clientXLogPos pglogrepl.LSN, nextStandbyMessageDeadline time.Time) (pglogrepl.LSN, time.Time) {
 
 	switch msg.Data[0] {
+
 	case pglogrepl.PrimaryKeepaliveMessageByteID:
-		pkm, err := pglogrepl.ParsePrimaryKeepaliveMessage(msg.Data[1:])
-		if err != nil {
-			log.Fatalln("ParsePrimaryKeepaliveMessage failed:", err)
-		}
-		log.Println("Primary Keepalive Message =>", "ServerWALEnd:", pkm.ServerWALEnd, "ServerTime:", pkm.ServerTime, "ReplyRequested:", pkm.ReplyRequested)
-
-		if pkm.ReplyRequested {
-			nextStandbyMessageDeadline = time.Time{}
-		}
-
+		nextStandbyMessageDeadline = walh.handleKeepAliveMessage(nextStandbyMessageDeadline, msg)
 	case pglogrepl.XLogDataByteID:
-		xld, err := pglogrepl.ParseXLogData(msg.Data[1:])
-		if err != nil {
-			log.Fatalln("ParseXLogData failed:", err)
-		}
-		// log.Printf("XLogData => WALStart %s ServerWALEnd %s ServerTime %s WALData:\n%s\n", xld.WALStart, xld.ServerWALEnd, xld.ServerTime, hex.Dump(xld.WALData))
-		var logicalMsg Wal2JsonChange
-		err = json.Unmarshal(xld.WALData, &logicalMsg)
-		if err != nil {
-			log.Fatalf("Parse logical replication message: %s", err)
-		}
-		log.Printf("Receive a logical replication message: %s\n", logicalMsg)
-
-		s, _ := json.MarshalIndent(logicalMsg, "", "\t")
-		fmt.Printf("Change message %s", string(s))
-
-		if logicalMsg.Action != "B" && logicalMsg.Action != "C" {
-			// Attempt to publish a message to the queue.
-			err := walh.publisher.Publish(xld.WALData)
-			if err != nil {
-				fmt.Println("Failed to publish message ", err)
-			}
-		}
-		clientXLogPos = xld.WALStart + pglogrepl.LSN(len(xld.WALData))
+		clientXLogPos = walh.handleWalData(msg, clientXLogPos)
 	}
 	return clientXLogPos, nextStandbyMessageDeadline
+}
+
+func (walh *WalHandler) handleKeepAliveMessage(nextStandbyMessageDeadline time.Time, msg *pgproto3.CopyData) time.Time {
+	pkm, err := pglogrepl.ParsePrimaryKeepaliveMessage(msg.Data[1:])
+	if err != nil {
+		log.Fatalln("ParsePrimaryKeepaliveMessage failed:", err)
+	}
+	log.Println("Primary Keepalive Message =>", "ServerWALEnd:", pkm.ServerWALEnd, "ServerTime:", pkm.ServerTime, "ReplyRequested:", pkm.ReplyRequested)
+
+	if pkm.ReplyRequested {
+		nextStandbyMessageDeadline = time.Time{}
+	}
+	return nextStandbyMessageDeadline
+}
+
+func (walh *WalHandler) handleWalData(msg *pgproto3.CopyData, clientXLogPos pglogrepl.LSN) pglogrepl.LSN {
+	xld, err := pglogrepl.ParseXLogData(msg.Data[1:])
+	if err != nil {
+		log.Fatalln("ParseXLogData failed:", err)
+	}
+	var logicalMsg Wal2JsonChange
+	err = json.Unmarshal(xld.WALData, &logicalMsg)
+	if err != nil {
+		log.Fatalf("Parse logical replication message: %s", err)
+	}
+	log.Printf("Receive a logical replication message: %s\n", logicalMsg)
+
+	s, _ := json.MarshalIndent(logicalMsg, "", "\t")
+	fmt.Printf("Change message %s", string(s))
+
+	if logicalMsg.Action != "B" && logicalMsg.Action != "C" {
+		// Attempt to publish a message to the queue.
+		err := walh.publisher.Publish(xld.WALData)
+		if err != nil {
+			fmt.Println("Failed to publish message ", err)
+		}
+	}
+	clientXLogPos = xld.WALStart + pglogrepl.LSN(len(xld.WALData))
+	return clientXLogPos
 }

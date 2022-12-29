@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 
 	"github.com/streadway/amqp"
@@ -10,7 +11,11 @@ import (
 type RabbitMQConsumer struct {
 }
 
-func SetupRabbitMQConsumer() <-chan amqp.Delivery {
+func NewConsumer() Consumer {
+	return &RabbitMQConsumer{}
+}
+
+func (rmqc *RabbitMQConsumer) SetupConsumer() <-chan amqp.Delivery {
 	// Define RabbitMQ server URL.
 	amqpServerURL := "amqp://admin:password@localhost:5672/?heartbeat=0"
 
@@ -29,7 +34,7 @@ func SetupRabbitMQConsumer() <-chan amqp.Delivery {
 	}
 	// defer channelRabbitMQ.Close()
 
-	// Subscribing to QueueService1 for getting messages.
+	// Subscribing to pg2mongo_queue for getting messages.
 	messages, err := channelRabbitMQ.Consume(
 		"pg2mongo_queue", // queue name
 		"",               // consumer
@@ -50,12 +55,33 @@ func SetupRabbitMQConsumer() <-chan amqp.Delivery {
 	return messages
 }
 
-func ConsumeMessage(message amqp.Delivery) {
+func (rmqc *RabbitMQConsumer) ConsumeMessage(body []byte) {
 	// For example, show received message in a console.
 	var logicalMsg Wal2JsonChange
-	err := json.Unmarshal(message.Body, &logicalMsg)
+	err := json.Unmarshal(body, &logicalMsg)
 	if err != nil {
 		log.Fatalf("Parse logical replication message: %s", err)
 	}
-	log.Printf(" > Received message: %s\n", message.Body)
+	log.Printf(" > Received message: %s\n", body)
+
+	wal2JsonV2 := rmqc.ParseWALMessage(logicalMsg)
+	s, _ := json.MarshalIndent(wal2JsonV2, "", "\t")
+	fmt.Printf("Wal2JsonV2 %s", string(s))
+}
+
+func (rmqc *RabbitMQConsumer) ParseWALMessage(walMessage Wal2JsonChange) Wal2JsonV2 {
+	var wal2JsonV2 Wal2JsonV2
+	wal2JsonV2.Action, wal2JsonV2.Table, wal2JsonV2.Schema = walMessage.Action, walMessage.Table, walMessage.Schema
+
+	wal2JsonV2.New = make(map[string]interface{})
+	for _, col := range walMessage.Columns {
+		wal2JsonV2.New[col.Name] = col.Value
+	}
+	if walMessage.Identity != nil {
+		wal2JsonV2.Old = make(map[string]interface{})
+		for _, col := range walMessage.Identity {
+			wal2JsonV2.Old[col.Name] = col.Value
+		}
+	}
+	return wal2JsonV2
 }
